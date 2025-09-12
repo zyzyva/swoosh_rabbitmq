@@ -1,4 +1,6 @@
 defmodule Swoosh.Adapters.RabbitMQ do
+  @email_service_vhost "email_service"
+
   @moduledoc """
   Swoosh adapter for publishing emails to RabbitMQ queues via HTTP Management API.
 
@@ -11,12 +13,13 @@ defmodule Swoosh.Adapters.RabbitMQ do
 
   - `:host` - RabbitMQ host (default: System.get_env("RABBITMQ_HOST") || "localhost")
   - `:port` - Management API port (default: System.get_env("RABBITMQ_MANAGEMENT_PORT") || 15672)
-  - `:vhost` - Virtual host name (default: System.get_env("RABBITMQ_VHOST") || "infrastructure")
   - `:queue` - Target queue name (default: "emails")
   - `:username` - RabbitMQ username (from System.get_env("RABBITMQ_USERNAME"))
   - `:password` - RabbitMQ password (from System.get_env("RABBITMQ_PASSWORD"))
   - `:service_name` - Service identifier for metadata
   - `:default_type` - Default email type (default: "transactional")
+
+  Note: Always publishes to the "email_service" vhost - this is not configurable.
 
   ## Example
 
@@ -31,7 +34,6 @@ defmodule Swoosh.Adapters.RabbitMQ do
         adapter: Swoosh.Adapters.RabbitMQ,
         host: System.get_env("RABBITMQ_HOST"),
         port: String.to_integer(System.get_env("RABBITMQ_MANAGEMENT_PORT") || "15672"),
-        vhost: System.get_env("RABBITMQ_VHOST"),
         username: System.get_env("RABBITMQ_USERNAME"), 
         password: System.get_env("RABBITMQ_PASSWORD"),
         service_name: "my_app"
@@ -53,12 +55,12 @@ defmodule Swoosh.Adapters.RabbitMQ do
   def deliver(email, config \\ []) do
     rabbit_config = build_rabbit_config(config)
     message = build_message(email, config)
-    
+
     case publish_message(message, rabbit_config) do
       {:ok, _response} ->
         message_id = Map.get(message, "message_id", generate_message_id())
         {:ok, %{id: message_id}}
-        
+
       {:error, reason} ->
         Logger.error("Failed to publish email to RabbitMQ: #{inspect(reason)}")
         {:error, reason}
@@ -68,8 +70,13 @@ defmodule Swoosh.Adapters.RabbitMQ do
   defp build_rabbit_config(config) do
     %{
       host: get_config(config, :host, System.get_env("RABBITMQ_HOST") || "localhost"),
-      port: get_config(config, :port, String.to_integer(System.get_env("RABBITMQ_MANAGEMENT_PORT") || "15672")),
-      vhost: get_config(config, :vhost, System.get_env("RABBITMQ_VHOST") || "infrastructure"),
+      port:
+        get_config(
+          config,
+          :port,
+          String.to_integer(System.get_env("RABBITMQ_MANAGEMENT_PORT") || "15672")
+        ),
+      vhost: @email_service_vhost,
       queue: get_config(config, :queue, "emails"),
       username: get_config(config, :username, System.get_env("RABBITMQ_USERNAME") || "guest"),
       password: get_config(config, :password, System.get_env("RABBITMQ_PASSWORD") || "guest")
@@ -110,8 +117,10 @@ defmodule Swoosh.Adapters.RabbitMQ do
     cond do
       header_type = get_header_value(email.headers, "x-email-type") ->
         header_type
+
       private_type = email.private[:email_type] ->
         to_string(private_type)
+
       true ->
         Keyword.get(config, :default_type, "transactional")
     end
@@ -149,8 +158,9 @@ defmodule Swoosh.Adapters.RabbitMQ do
 
   defp publish_message(message, rabbit_config) do
     # Use RabbitMQ Management API to publish message
-    url = "http://#{rabbit_config.host}:#{rabbit_config.port}/api/exchanges/#{URI.encode(rabbit_config.vhost)}/amq.default/publish"
-    
+    url =
+      "http://#{rabbit_config.host}:#{rabbit_config.port}/api/exchanges/#{URI.encode(rabbit_config.vhost)}/amq.default/publish"
+
     # Build the publish payload according to Management API spec
     payload = %{
       "properties" => %{},
@@ -160,11 +170,14 @@ defmodule Swoosh.Adapters.RabbitMQ do
     }
 
     headers = [
-      {"Authorization", "Basic #{Base.encode64("#{rabbit_config.username}:#{rabbit_config.password}")}"},
+      {"Authorization",
+       "Basic #{Base.encode64("#{rabbit_config.username}:#{rabbit_config.password}")}"},
       {"Content-Type", "application/json"}
     ]
 
-    Logger.debug("Publishing email message to RabbitMQ queue #{rabbit_config.queue}: #{message["message_id"]}")
+    Logger.debug(
+      "Publishing email message to RabbitMQ queue #{rabbit_config.queue}: #{message["message_id"]}"
+    )
 
     case Req.post(url, json: payload, headers: headers) do
       {:ok, %{status: 200, body: %{"routed" => true}}} ->
@@ -172,7 +185,10 @@ defmodule Swoosh.Adapters.RabbitMQ do
         {:ok, :published}
 
       {:ok, %{status: 200, body: %{"routed" => false}}} ->
-        Logger.warning("Message published but not routed (queue may not exist): #{message["message_id"]}")
+        Logger.warning(
+          "Message published but not routed (queue may not exist): #{message["message_id"]}"
+        )
+
         {:error, "Message not routed to queue"}
 
       {:ok, %{status: status, body: body}} ->
@@ -184,62 +200,56 @@ defmodule Swoosh.Adapters.RabbitMQ do
         {:error, "Request failed: #{inspect(reason)}"}
     end
   end
-  
+
   defp generate_message_id do
     :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
   end
 
   @doc """
   Generates a .rabbitmq.json manifest file for the current Mix project.
-  
-  This manifest follows provisioner conventions and defines the RabbitMQ
-  resources needed for email publishing.
 
-  ## Options
-  
-  - `:vhost` - Virtual host name (default: "infrastructure")
-  - `:permissions` - Custom permissions map (default: write-only to emails queue)
+  This manifest follows provisioner conventions and defines the RabbitMQ
+  resources needed for email publishing. Always generates access to the
+  email_service vhost where emails are processed.
 
   ## Examples
 
-      # Generate with defaults
+      # Generate manifest for email publishing
       Swoosh.Adapters.RabbitMQ.generate_manifest()
-
-      # Generate with custom options
-      Swoosh.Adapters.RabbitMQ.generate_manifest(
-        vhost: "production",
-        permissions: %{configure: "", write: "emails", read: ""}
-      )
   """
-  def generate_manifest(opts \\ []) do
+  def generate_manifest(_opts \\ []) do
     app_name = Mix.Project.config()[:app] |> to_string()
-    vhost = Keyword.get(opts, :vhost, "infrastructure")
-    permissions = Keyword.get(opts, :permissions, %{
-      "configure" => "",
-      "write" => "emails",
-      "read" => ""
-    })
 
     manifest = %{
       "rabbitmq" => %{
-        "vhosts" => [%{
-          "name" => vhost,
-          "shared" => true,
-          "description" => "Shared vhost for infrastructure services communication"
-        }],
-        "users" => [%{
-          "username" => app_name,
-          "vhosts" => [%{
-            "name" => vhost,
-            "permissions" => permissions
-          }]
-        }]
+        "vhosts" => [
+          %{
+            "name" => @email_service_vhost,
+            "shared" => true,
+            "description" => "Shared vhost for email service communication"
+          }
+        ],
+        "users" => [
+          %{
+            "username" => app_name,
+            "vhosts" => [
+              %{
+                "name" => @email_service_vhost,
+                "permissions" => %{
+                  "configure" => "",
+                  "write" => "emails",
+                  "read" => ""
+                }
+              }
+            ]
+          }
+        ]
       }
     }
 
     file_content = JSON.encode!(manifest)
     File.write!(".rabbitmq.json", file_content)
-    
+
     IO.puts("Generated .rabbitmq.json manifest for #{app_name}")
     {:ok, ".rabbitmq.json"}
   end

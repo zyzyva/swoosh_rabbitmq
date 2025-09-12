@@ -9,21 +9,25 @@ defmodule SwooshRabbitmqTest do
 
   describe "email type detection" do
     test "detects type from X-Email-Type header" do
-      email = new() 
-        |> subject("Welcome!") 
+      email =
+        new()
+        |> subject("Welcome!")
         |> header("X-Email-Type", "welcome")
+
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["type"] == "welcome"
     end
 
     test "detects type from private field" do
-      email = new() 
+      email =
+        new()
         |> subject("Reset your password")
         |> put_private(:email_type, :password_reset)
+
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["type"] == "password_reset"
     end
@@ -31,7 +35,7 @@ defmodule SwooshRabbitmqTest do
     test "uses config default type" do
       email = new() |> subject("Your order confirmation")
       config = [default_type: "transactional"]
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["type"] == "transactional"
     end
@@ -39,28 +43,33 @@ defmodule SwooshRabbitmqTest do
     test "defaults to transactional when no type specified" do
       email = new() |> subject("Some email")
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["type"] == "transactional"
     end
 
     test "header takes priority over private field" do
-      email = new()
+      email =
+        new()
         |> subject("Test")
         |> header("X-Email-Type", "welcome")
         |> put_private(:email_type, :password_reset)
+
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["type"] == "welcome"
     end
 
     test "header lookup is case insensitive" do
-      email = new()
+      email =
+        new()
         |> subject("Test")
-        |> header("x-email-type", "welcome")  # lowercase
+        # lowercase
+        |> header("x-email-type", "welcome")
+
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["type"] == "welcome"
     end
@@ -68,7 +77,7 @@ defmodule SwooshRabbitmqTest do
 
   describe "message building" do
     test "builds complete message structure" do
-      email = 
+      email =
         new()
         |> to("user@example.com")
         |> from("noreply@app.com")
@@ -94,20 +103,22 @@ defmodule SwooshRabbitmqTest do
     test "handles missing optional fields gracefully" do
       email = new() |> to("user@example.com") |> subject("Test")
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
-      
+
       assert message["to"] == "user@example.com"
       assert message["subject"] == "Test"
       assert message["body"] == ""
-      refute Map.has_key?(message, "html_body")  # Should be filtered out
-      assert message["metadata"]["service"] == "app"  # default
+      # Should be filtered out
+      refute Map.has_key?(message, "html_body")
+      # default
+      assert message["metadata"]["service"] == "app"
     end
 
     test "handles tuple recipients" do
       email = new() |> to({"Jane Doe", "jane@example.com"}) |> subject("Test")
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["to"] == "jane@example.com"
     end
@@ -115,7 +126,7 @@ defmodule SwooshRabbitmqTest do
     test "handles tuple senders" do
       email = new() |> from({"Support Team", "support@app.com"}) |> subject("Test")
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["from"] == "support@app.com"
     end
@@ -123,7 +134,7 @@ defmodule SwooshRabbitmqTest do
     test "uses default sender when from is missing" do
       email = new() |> subject("Test")
       config = [default_from: "default@app.com"]
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["from"] == "default@app.com"
     end
@@ -137,15 +148,15 @@ defmodule SwooshRabbitmqTest do
       config = [service_name: "test_app"]
 
       # Mock successful HTTP response
-      with_mock Req, [:passthrough], [
-        post: fn _url, _opts -> 
+      with_mock Req, [:passthrough],
+        post: fn _url, _opts ->
           {:ok, %{status: 200, body: %{"routed" => true}}}
-        end
-      ] do
+        end do
         capture_log(fn ->
           assert {:ok, %{id: message_id}} = RabbitMQ.deliver(email, config)
           assert is_binary(message_id)
-          assert String.length(message_id) == 32  # 16 bytes encoded as hex
+          # 16 bytes encoded as hex
+          assert String.length(message_id) == 32
         end)
       end
     end
@@ -155,11 +166,10 @@ defmodule SwooshRabbitmqTest do
       config = []
 
       # Mock HTTP failure
-      with_mock Req, [:passthrough], [
-        post: fn _url, _opts -> 
+      with_mock Req, [:passthrough],
+        post: fn _url, _opts ->
           {:ok, %{status: 401, body: %{"error" => "unauthorized"}}}
-        end
-      ] do
+        end do
         capture_log(fn ->
           assert {:error, error_msg} = RabbitMQ.deliver(email, config)
           assert error_msg =~ "HTTP 401"
@@ -172,11 +182,10 @@ defmodule SwooshRabbitmqTest do
       config = []
 
       # Mock message published but not routed (queue doesn't exist)
-      with_mock Req, [:passthrough], [
-        post: fn _url, _opts -> 
+      with_mock Req, [:passthrough],
+        post: fn _url, _opts ->
           {:ok, %{status: 200, body: %{"routed" => false}}}
-        end
-      ] do
+        end do
         capture_log(fn ->
           assert {:error, "Message not routed to queue"} = RabbitMQ.deliver(email, config)
         end)
@@ -188,11 +197,10 @@ defmodule SwooshRabbitmqTest do
       config = []
 
       # Mock network failure
-      with_mock Req, [:passthrough], [
-        post: fn _url, _opts -> 
+      with_mock Req, [:passthrough],
+        post: fn _url, _opts ->
           {:error, %{reason: :timeout}}
-        end
-      ] do
+        end do
         capture_log(fn ->
           assert {:error, error_msg} = RabbitMQ.deliver(email, config)
           assert error_msg =~ "Request failed"
@@ -210,14 +218,14 @@ defmodule SwooshRabbitmqTest do
 
       # We can't easily test build_rabbit_config directly, but we can test it through deliver
       # Just verify it doesn't crash with empty config
-      with_mock Req, [:passthrough], [
-        post: fn url, _opts -> 
+      with_mock Req, [:passthrough],
+        post: fn url, _opts ->
           # Verify the URL contains expected defaults
           assert url =~ "localhost:15672"
-          assert url =~ "infrastructure"
+          # Now always uses email_service vhost
+          assert url =~ "email_service"
           {:ok, %{status: 200, body: %{"routed" => true}}}
-        end
-      ] do
+        end do
         capture_log(fn ->
           assert {:ok, _} = RabbitMQ.deliver(email, config)
         end)
@@ -226,28 +234,28 @@ defmodule SwooshRabbitmqTest do
 
     test "builds rabbit config with custom values" do
       email = new() |> to("user@example.com") |> subject("Test")
+
       config = [
         host: "custom-host",
         port: 9999,
-        vhost: "custom-vhost",
         queue: "custom-queue",
         username: "custom-user",
         password: "custom-pass"
       ]
 
-      with_mock Req, [:passthrough], [
-        post: fn url, opts -> 
-          # Verify custom config is used
+      with_mock Req, [:passthrough],
+        post: fn url, opts ->
+          # Verify custom config is used (but vhost is always email_service)
           assert url =~ "custom-host:9999"
-          assert url =~ "custom-vhost"
-          
+          # Always uses email_service vhost, not configurable
+          assert url =~ "email_service"
+
           # Check the payload contains custom queue
           payload = opts[:json]
           assert payload["routing_key"] == "custom-queue"
-          
+
           {:ok, %{status: 200, body: %{"routed" => true}}}
-        end
-      ] do
+        end do
         capture_log(fn ->
           assert {:ok, _} = RabbitMQ.deliver(email, config)
         end)
@@ -258,19 +266,18 @@ defmodule SwooshRabbitmqTest do
       # Set environment variables
       System.put_env("RABBITMQ_HOST", "env-host")
       System.put_env("RABBITMQ_MANAGEMENT_PORT", "8080")
-      System.put_env("RABBITMQ_VHOST", "env-vhost")
 
       email = new() |> to("user@example.com") |> subject("Test")
       config = []
 
-      with_mock Req, [:passthrough], [
-        post: fn url, _opts -> 
-          # Verify env vars are used
+      with_mock Req, [:passthrough],
+        post: fn url, _opts ->
+          # Verify env vars are used (but vhost is always email_service)
           assert url =~ "env-host:8080"
-          assert url =~ "env-vhost"
+          # Always uses email_service vhost, ignores RABBITMQ_VHOST env var
+          assert url =~ "email_service"
           {:ok, %{status: 200, body: %{"routed" => true}}}
-        end
-      ] do
+        end do
         capture_log(fn ->
           assert {:ok, _} = RabbitMQ.deliver(email, config)
         end)
@@ -278,8 +285,7 @@ defmodule SwooshRabbitmqTest do
 
       # Cleanup
       System.delete_env("RABBITMQ_HOST")
-      System.delete_env("RABBITMQ_MANAGEMENT_PORT") 
-      System.delete_env("RABBITMQ_VHOST")
+      System.delete_env("RABBITMQ_MANAGEMENT_PORT")
     end
   end
 
@@ -295,35 +301,38 @@ defmodule SwooshRabbitmqTest do
         html_body: nil,
         headers: nil
       }
+
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
-      
+
       assert message["to"] == nil
       assert message["subject"] == nil
       assert message["body"] == ""
-      refute Map.has_key?(message, "html_body")  # nil values filtered out
+      # nil values filtered out
+      refute Map.has_key?(message, "html_body")
     end
 
     test "handles empty recipient list" do
       email = new() |> to([]) |> subject("Test")
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
       assert message["to"] == nil
     end
 
     test "handles invalid port configuration" do
       email = new() |> to("user@example.com") |> subject("Test")
-      config = [port: "invalid"]  # String instead of integer
-      
+      # String instead of integer
+      config = [port: "invalid"]
+
       # Should try to use the invalid value but not crash
-      with_mock Req, [:passthrough], [
-        post: fn url, _opts -> 
-          assert url =~ ":invalid"  # Uses the invalid value as passed
+      with_mock Req, [:passthrough],
+        post: fn url, _opts ->
+          # Uses the invalid value as passed
+          assert url =~ ":invalid"
           {:ok, %{status: 200, body: %{"routed" => true}}}
-        end
-      ] do
+        end do
         capture_log(fn ->
           assert {:ok, _} = RabbitMQ.deliver(email, config)
         end)
@@ -335,19 +344,21 @@ defmodule SwooshRabbitmqTest do
       # Ensure headers is nil
       email = %{email | headers: nil}
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
-      assert message["type"] == "transactional"  # Should use default
+      # Should use default
+      assert message["type"] == "transactional"
     end
 
     test "handles empty headers map" do
-      email = new() |> subject("Test") 
+      email = new() |> subject("Test")
       # Set empty headers map
       email = %{email | headers: %{}}
       config = []
-      
+
       message = RabbitMQ.build_message_for_test(email, config)
-      assert message["type"] == "transactional"  # Should use default
+      # Should use default
+      assert message["type"] == "transactional"
     end
   end
 
@@ -356,39 +367,39 @@ defmodule SwooshRabbitmqTest do
 
     test "generates manifest with defaults" do
       # Mock Mix.Project.config
-      with_mock Mix.Project, [:passthrough], [config: fn -> [app: :test_app] end] do
+      with_mock Mix.Project, [:passthrough], config: fn -> [app: :test_app] end do
         capture_io(fn ->
           assert {:ok, ".rabbitmq.json"} = RabbitMQ.generate_manifest()
-          
+
           # Check file was created
           assert File.exists?(".rabbitmq.json")
-          
-          # Verify content
+
+          # Verify content - now always uses email_service vhost
           content = File.read!(".rabbitmq.json") |> JSON.decode!()
           assert content["rabbitmq"]["users"] |> hd() |> get_in(["username"]) == "test_app"
-          assert content["rabbitmq"]["vhosts"] |> hd() |> get_in(["name"]) == "infrastructure"
-          assert content["rabbitmq"]["users"] |> hd() |> get_in(["vhosts", Access.at(0), "permissions", "write"]) == "emails"
-          
+          assert content["rabbitmq"]["vhosts"] |> hd() |> get_in(["name"]) == "email_service"
+
+          assert content["rabbitmq"]["users"]
+                 |> hd()
+                 |> get_in(["vhosts", Access.at(0), "permissions", "write"]) == "emails"
+
           # Cleanup
           File.rm(".rabbitmq.json")
         end)
       end
     end
 
-    test "generates manifest with custom options" do
-      with_mock Mix.Project, [:passthrough], [config: fn -> [app: :custom_app] end] do
-        custom_permissions = %{"configure" => ".*", "write" => "custom", "read" => ""}
-        
+    test "generates manifest ignoring custom vhost option" do
+      with_mock Mix.Project, [:passthrough], config: fn -> [app: :custom_app] end do
+        # Vhost option is now ignored, always uses email_service
         capture_io(fn ->
-          assert {:ok, ".rabbitmq.json"} = RabbitMQ.generate_manifest(
-            vhost: "production", 
-            permissions: custom_permissions
-          )
-          
+          assert {:ok, ".rabbitmq.json"} = RabbitMQ.generate_manifest()
+
           content = File.read!(".rabbitmq.json") |> JSON.decode!()
-          assert content["rabbitmq"]["vhosts"] |> hd() |> get_in(["name"]) == "production"
-          assert content["rabbitmq"]["users"] |> hd() |> get_in(["vhosts", Access.at(0), "permissions"]) == custom_permissions
-          
+          # Vhost is always email_service, regardless of any options passed
+          assert content["rabbitmq"]["vhosts"] |> hd() |> get_in(["name"]) == "email_service"
+          assert content["rabbitmq"]["users"] |> hd() |> get_in(["username"]) == "custom_app"
+
           File.rm(".rabbitmq.json")
         end)
       end
