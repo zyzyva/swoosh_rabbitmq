@@ -102,6 +102,7 @@ defmodule Swoosh.Adapters.RabbitMQ do
       "body" => email.text_body || "",
       "html_body" => email.html_body,
       "from" => format_sender(email.from, config),
+      "from_name" => Keyword.get(config, :sender_name) || Keyword.get(config, :service_name, "Email2Email"),
       "message_id" => generate_message_id(),
       "metadata" => %{
         "service" => Keyword.get(config, :service_name, "app"),
