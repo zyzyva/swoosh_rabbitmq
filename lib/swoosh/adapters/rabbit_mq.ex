@@ -46,6 +46,27 @@ defmodule Swoosh.Adapters.RabbitMQ do
   - Configuration default: `:default_type` option
 
   Supported types: "welcome", "password_reset", "transactional"
+
+  ## Type-Safe Email Builders
+
+  Use `SwooshRabbitMQ.EmailBuilder` for type-safe email creation that ensures
+  all required fields are included:
+
+      import SwooshRabbitMQ.EmailBuilder
+
+      # Welcome email with verification_link
+      welcome_email("user@example.com", "https://app.com/verify/123")
+      |> from("noreply@app.com")
+      |> subject("Welcome!")
+      |> text_body("Please verify your email")
+      |> Mailer.deliver()
+
+      # Password reset with reset_link
+      password_reset_email("user@example.com", "https://app.com/reset/456")
+      |> from("noreply@app.com")
+      |> subject("Reset your password")
+      |> text_body("Click to reset")
+      |> Mailer.deliver()
   """
 
   use Swoosh.Adapter
@@ -53,17 +74,25 @@ defmodule Swoosh.Adapters.RabbitMQ do
 
   @impl Swoosh.Adapter
   def deliver(email, config \\ []) do
-    rabbit_config = build_rabbit_config(config)
-    message = build_message(email, config)
+    # Validate email has required fields
+    case SwooshRabbitMQ.EmailBuilder.validate_email(email) do
+      {:ok, _email} ->
+        rabbit_config = build_rabbit_config(config)
+        message = build_message(email, config)
 
-    case publish_message(message, rabbit_config) do
-      {:ok, _response} ->
-        message_id = Map.get(message, "message_id", generate_message_id())
-        {:ok, %{id: message_id}}
+        case publish_message(message, rabbit_config) do
+          {:ok, _response} ->
+            message_id = Map.get(message, "message_id", generate_message_id())
+            {:ok, %{id: message_id}}
 
-      {:error, reason} ->
-        Logger.error("Failed to publish email to RabbitMQ: #{inspect(reason)}")
-        {:error, reason}
+          {:error, reason} ->
+            Logger.error("Failed to publish email to RabbitMQ: #{inspect(reason)}")
+            {:error, reason}
+        end
+
+      {:error, validation_error} ->
+        Logger.error("Email validation failed: #{validation_error}")
+        {:error, validation_error}
     end
   end
 
@@ -95,7 +124,7 @@ defmodule Swoosh.Adapters.RabbitMQ do
   end
 
   defp build_message(email, config) do
-    %{
+    base_message = %{
       "type" => determine_email_type(email, config),
       "to" => format_recipient(email.to),
       "subject" => email.subject,
@@ -109,8 +138,23 @@ defmodule Swoosh.Adapters.RabbitMQ do
         "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
       }
     }
+
+    # Add special fields from private data
+    message_with_fields =
+      base_message
+      |> maybe_add_private_field(email, :reset_link, "reset_link")
+      |> maybe_add_private_field(email, :verification_link, "verification_link")
+
+    message_with_fields
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Map.new()
+  end
+
+  defp maybe_add_private_field(message, email, private_key, message_key) do
+    case Map.get(email.private, private_key) do
+      nil -> message
+      value -> Map.put(message, message_key, value)
+    end
   end
 
   defp determine_email_type(email, config) do
@@ -119,7 +163,7 @@ defmodule Swoosh.Adapters.RabbitMQ do
       header_type = get_header_value(email.headers, "x-email-type") ->
         header_type
 
-      private_type = email.private[:email_type] ->
+      private_type = Map.get(email.private, :email_type) ->
         to_string(private_type)
 
       true ->

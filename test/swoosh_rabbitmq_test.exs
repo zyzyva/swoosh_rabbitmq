@@ -100,6 +100,70 @@ defmodule SwooshRabbitmqTest do
       assert is_binary(message["metadata"]["created_at"])
     end
 
+    test "includes reset_link from private field for password_reset emails" do
+      email =
+        new()
+        |> to("user@example.com")
+        |> from("noreply@app.com")
+        |> subject("Reset your password")
+        |> text_body("Click link to reset")
+        |> put_private(:email_type, :password_reset)
+        |> put_private(:reset_link, "https://example.com/reset/abc123")
+
+      config = []
+      message = RabbitMQ.build_message_for_test(email, config)
+
+      assert message["type"] == "password_reset"
+      assert message["reset_link"] == "https://example.com/reset/abc123"
+    end
+
+    test "includes verification_link from private field for welcome emails" do
+      email =
+        new()
+        |> to("user@example.com")
+        |> from("noreply@app.com")
+        |> subject("Welcome!")
+        |> text_body("Please verify your email")
+        |> put_private(:email_type, :welcome)
+        |> put_private(:verification_link, "https://example.com/verify/xyz789")
+
+      config = []
+      message = RabbitMQ.build_message_for_test(email, config)
+
+      assert message["type"] == "welcome"
+      assert message["verification_link"] == "https://example.com/verify/xyz789"
+    end
+
+    test "does not include reset_link when not present" do
+      email =
+        new()
+        |> to("user@example.com")
+        |> subject("Regular Email")
+        |> put_private(:email_type, :transactional)
+
+      config = []
+      message = RabbitMQ.build_message_for_test(email, config)
+
+      refute Map.has_key?(message, "reset_link")
+      refute Map.has_key?(message, "verification_link")
+    end
+
+    test "handles both reset_link and verification_link in same email" do
+      # This shouldn't happen in practice, but let's test it handles gracefully
+      email =
+        new()
+        |> to("user@example.com")
+        |> subject("Test")
+        |> put_private(:reset_link, "https://example.com/reset")
+        |> put_private(:verification_link, "https://example.com/verify")
+
+      config = []
+      message = RabbitMQ.build_message_for_test(email, config)
+
+      assert message["reset_link"] == "https://example.com/reset"
+      assert message["verification_link"] == "https://example.com/verify"
+    end
+
     test "handles missing optional fields gracefully" do
       email = new() |> to("user@example.com") |> subject("Test")
       config = []
@@ -299,7 +363,8 @@ defmodule SwooshRabbitmqTest do
         subject: nil,
         text_body: nil,
         html_body: nil,
-        headers: nil
+        headers: nil,
+        private: %{}
       }
 
       config = []
@@ -311,6 +376,8 @@ defmodule SwooshRabbitmqTest do
       assert message["body"] == ""
       # nil values filtered out
       refute Map.has_key?(message, "html_body")
+      refute Map.has_key?(message, "reset_link")
+      refute Map.has_key?(message, "verification_link")
     end
 
     test "handles empty recipient list" do
