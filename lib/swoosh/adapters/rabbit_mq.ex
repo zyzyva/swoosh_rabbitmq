@@ -199,7 +199,7 @@ defmodule Swoosh.Adapters.RabbitMQ do
 
   defp format_sender({_name, email}, _config), do: email
   defp format_sender(email, _config) when is_binary(email), do: email
-  defp format_sender(_, config), do: Keyword.get(config, :default_from, "no-reply@example.com")
+  defp format_sender(_, config), do: Keyword.get(config, :default_from, "no-reply@email2.email")
 
   defp publish_message(message, rabbit_config) do
     # Use RabbitMQ Management API to publish message
