@@ -75,25 +75,33 @@ defmodule Swoosh.Adapters.RabbitMQ do
   @impl Swoosh.Adapter
   def deliver(email, config \\ []) do
     # Validate email has required fields
-    case SwooshRabbitMQ.EmailBuilder.validate_email(email) do
-      {:ok, _email} ->
-        rabbit_config = build_rabbit_config(config)
-        message = build_message(email, config)
+    email
+    |> SwooshRabbitMQ.EmailBuilder.validate_email()
+    |> do_deliver(email, config)
+  end
 
-        case publish_message(message, rabbit_config) do
-          {:ok, _response} ->
-            message_id = Map.get(message, "message_id", generate_message_id())
-            {:ok, %{id: message_id}}
+  defp do_deliver({:ok, _validated_email}, email, config) do
+    rabbit_config = build_rabbit_config(config)
+    message = build_message(email, config)
 
-          {:error, reason} ->
-            Logger.error("Failed to publish email to RabbitMQ: #{inspect(reason)}")
-            {:error, reason}
-        end
+    message
+    |> publish_message(rabbit_config)
+    |> handle_publish_result(message)
+  end
 
-      {:error, validation_error} ->
-        Logger.error("Email validation failed: #{validation_error}")
-        {:error, validation_error}
-    end
+  defp do_deliver({:error, validation_error}, _email, _config) do
+    Logger.error("Email validation failed: #{validation_error}")
+    {:error, validation_error}
+  end
+
+  defp handle_publish_result({:ok, _response}, message) do
+    message_id = Map.get(message, "message_id", generate_message_id())
+    {:ok, %{id: message_id}}
+  end
+
+  defp handle_publish_result({:error, reason}, _message) do
+    Logger.error("Failed to publish email to RabbitMQ: #{inspect(reason)}")
+    {:error, reason}
   end
 
   defp build_rabbit_config(config) do
@@ -113,12 +121,14 @@ defmodule Swoosh.Adapters.RabbitMQ do
   end
 
   defp get_config(config, key, default) do
-    case Keyword.get(config, key) do
-      nil -> default
-      value when is_integer(value) -> value
-      value when is_binary(value) -> value
-      value -> String.to_integer(to_string(value))
-    end
+    do_get_config(Keyword.get(config, key), default)
+  end
+
+  defp do_get_config(nil, default), do: default
+  defp do_get_config(value, _default) when is_integer(value), do: value
+  defp do_get_config(value, _default) when is_binary(value), do: value
+  defp do_get_config(value, default) do
+    String.to_integer(to_string(value))
   rescue
     _ -> default
   end
@@ -139,67 +149,57 @@ defmodule Swoosh.Adapters.RabbitMQ do
       }
     }
 
-    # Add special fields from private data
-    message_with_fields =
-      base_message
-      |> maybe_add_private_field(email, :reset_link, "reset_link")
-      |> maybe_add_private_field(email, :verification_link, "verification_link")
-
-    message_with_fields
+    base_message
+    |> maybe_add_link(email.private)
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Map.new()
   end
 
-  defp maybe_add_private_field(message, email, private_key, message_key) do
-    case Map.get(email.private, private_key) do
-      nil -> message
-      value -> Map.put(message, message_key, value)
-    end
+  defp maybe_add_link(message, %{link: link}) when is_binary(link) do
+    Map.put(message, "link", link)
   end
+
+  defp maybe_add_link(message, _private), do: message
 
   defp determine_email_type(email, config) do
     # Priority: header > private field > config default
-    cond do
-      header_type = get_header_value(email.headers, "x-email-type") ->
-        header_type
-
-      private_type = Map.get(email.private, :email_type) ->
-        to_string(private_type)
-
-      true ->
-        Keyword.get(config, :default_type, "transactional")
-    end
+    determine_type_from_header(email.headers)
+    || determine_type_from_private(email.private)
+    || Keyword.get(config, :default_type, "transactional")
   end
+
+  defp determine_type_from_header(headers) when is_map(headers) do
+    get_header_value(headers, "x-email-type")
+  end
+
+  defp determine_type_from_header(_), do: nil
+
+  defp determine_type_from_private(%{email_type: type}) when not is_nil(type) do
+    to_string(type)
+  end
+
+  defp determine_type_from_private(_), do: nil
 
   defp get_header_value(headers, key) when is_map(headers) do
     # Case-insensitive header lookup
     headers
     |> Enum.find(fn {k, _v} -> String.downcase(to_string(k)) == String.downcase(key) end)
-    |> case do
-      {_k, v} -> to_string(v)
-      nil -> nil
-    end
+    |> extract_header_value()
   end
 
   defp get_header_value(_, _), do: nil
 
-  defp format_recipient(to) when is_list(to) do
-    case to do
-      [{_name, email}] -> email
-      [email] when is_binary(email) -> email
-      [] -> nil
-    end
-  end
+  defp extract_header_value({_k, v}), do: to_string(v)
+  defp extract_header_value(nil), do: nil
 
+  defp format_recipient([{_name, email}]), do: email
+  defp format_recipient([email]) when is_binary(email), do: email
+  defp format_recipient([]), do: nil
   defp format_recipient(_), do: nil
 
-  defp format_sender(from, config) do
-    case from do
-      {_name, email} -> email
-      email when is_binary(email) -> email
-      _ -> Keyword.get(config, :default_from, "no-reply@example.com")
-    end
-  end
+  defp format_sender({_name, email}, _config), do: email
+  defp format_sender(email, _config) when is_binary(email), do: email
+  defp format_sender(_, config), do: Keyword.get(config, :default_from, "no-reply@example.com")
 
   defp publish_message(message, rabbit_config) do
     # Use RabbitMQ Management API to publish message
@@ -224,26 +224,31 @@ defmodule Swoosh.Adapters.RabbitMQ do
       "Publishing email message to RabbitMQ queue #{rabbit_config.queue}: #{message["message_id"]}"
     )
 
-    case Req.post(url, json: payload, headers: headers) do
-      {:ok, %{status: 200, body: %{"routed" => true}}} ->
-        Logger.debug("Successfully published email message: #{message["message_id"]}")
-        {:ok, :published}
+    url
+    |> Req.post(json: payload, headers: headers)
+    |> handle_rabbitmq_response(message)
+  end
 
-      {:ok, %{status: 200, body: %{"routed" => false}}} ->
-        Logger.warning(
-          "Message published but not routed (queue may not exist): #{message["message_id"]}"
-        )
+  defp handle_rabbitmq_response({:ok, %{status: 200, body: %{"routed" => true}}}, message) do
+    Logger.debug("Successfully published email message: #{message["message_id"]}")
+    {:ok, :published}
+  end
 
-        {:error, "Message not routed to queue"}
+  defp handle_rabbitmq_response({:ok, %{status: 200, body: %{"routed" => false}}}, message) do
+    Logger.warning(
+      "Message published but not routed (queue may not exist): #{message["message_id"]}"
+    )
+    {:error, "Message not routed to queue"}
+  end
 
-      {:ok, %{status: status, body: body}} ->
-        Logger.error("RabbitMQ publish failed with status #{status}: #{inspect(body)}")
-        {:error, "HTTP #{status}: #{inspect(body)}"}
+  defp handle_rabbitmq_response({:ok, %{status: status, body: body}}, _message) do
+    Logger.error("RabbitMQ publish failed with status #{status}: #{inspect(body)}")
+    {:error, "HTTP #{status}: #{inspect(body)}"}
+  end
 
-      {:error, reason} ->
-        Logger.error("HTTP request failed: #{inspect(reason)}")
-        {:error, "Request failed: #{inspect(reason)}"}
-    end
+  defp handle_rabbitmq_response({:error, reason}, _message) do
+    Logger.error("HTTP request failed: #{inspect(reason)}")
+    {:error, "Request failed: #{inspect(reason)}"}
   end
 
   defp generate_message_id do

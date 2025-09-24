@@ -4,15 +4,15 @@ defmodule SwooshRabbitMQ.EmailBuilder do
   all required fields are included for the email service.
 
   Each email type has specific requirements:
-  - welcome: requires verification_link
-  - password_reset: requires reset_link
+  - welcome: requires link field (verification link)
+  - password_reset: requires link field (reset/magic link)
   - transactional: no additional fields required
   """
 
   import Swoosh.Email
 
   @doc """
-  Builds a welcome email with required verification_link field.
+  Builds a welcome email with required link field.
 
   ## Examples
 
@@ -21,15 +21,15 @@ defmodule SwooshRabbitMQ.EmailBuilder do
       ...> |> subject("Welcome!")
       ...> |> text_body("Welcome to our app!")
   """
-  def welcome_email(to_email, verification_link) when is_binary(verification_link) do
+  def welcome_email(to_email, link) when is_binary(link) do
     new()
     |> to(to_email)
     |> put_private(:email_type, "welcome")
-    |> put_private(:verification_link, verification_link)
+    |> put_private(:link, link)
   end
 
   @doc """
-  Builds a password reset email with required reset_link field.
+  Builds a password reset email with required link field.
 
   ## Examples
 
@@ -38,15 +38,15 @@ defmodule SwooshRabbitMQ.EmailBuilder do
       ...> |> subject("Reset your password")
       ...> |> text_body("Click here to reset your password")
   """
-  def password_reset_email(to_email, reset_link) when is_binary(reset_link) do
+  def password_reset_email(to_email, link) when is_binary(link) do
     new()
     |> to(to_email)
     |> put_private(:email_type, "password_reset")
-    |> put_private(:reset_link, reset_link)
+    |> put_private(:link, link)
   end
 
   @doc """
-  Builds a magic link login email using password_reset type with reset_link.
+  Builds a magic link login email using password_reset type with link.
 
   ## Examples
 
@@ -55,11 +55,11 @@ defmodule SwooshRabbitMQ.EmailBuilder do
       ...> |> subject("Log in to your account")
       ...> |> text_body("Click here to log in")
   """
-  def magic_link_email(to_email, login_link) when is_binary(login_link) do
+  def magic_link_email(to_email, link) when is_binary(link) do
     new()
     |> to(to_email)
     |> put_private(:email_type, "password_reset")
-    |> put_private(:reset_link, login_link)
+    |> put_private(:link, link)
   end
 
   @doc """
@@ -87,17 +87,10 @@ defmodule SwooshRabbitMQ.EmailBuilder do
   end
 
   @doc """
-  Adds verification_link to an email (for welcome emails).
+  Adds link to an email (for welcome and password_reset emails).
   """
-  def add_verification_link(email, link) when is_binary(link) do
-    put_private(email, :verification_link, link)
-  end
-
-  @doc """
-  Adds reset_link to an email (for password_reset emails).
-  """
-  def add_reset_link(email, link) when is_binary(link) do
-    put_private(email, :reset_link, link)
+  def add_link(email, link) when is_binary(link) do
+    put_private(email, :link, link)
   end
 
   @doc """
@@ -106,25 +99,18 @@ defmodule SwooshRabbitMQ.EmailBuilder do
 
   This is called automatically by the RabbitMQ adapter before sending.
   """
+  def validate_email(%{private: %{email_type: type, link: link}} = email)
+      when type in ["welcome", "password_reset"] and is_binary(link) do
+    {:ok, email}
+  end
+
+  def validate_email(%{private: %{email_type: type}} = _email)
+      when type in ["welcome", "password_reset"] do
+    {:error, "#{type} email missing required field: link"}
+  end
+
   def validate_email(email) do
-    case Map.get(email.private, :email_type) do
-      "welcome" ->
-        if Map.get(email.private, :verification_link) do
-          {:ok, email}
-        else
-          {:error, "welcome email missing required field: verification_link"}
-        end
-
-      "password_reset" ->
-        if Map.get(email.private, :reset_link) do
-          {:ok, email}
-        else
-          {:error, "password_reset email missing required field: reset_link"}
-        end
-
-      _ ->
-        # transactional or unspecified type - no special fields required
-        {:ok, email}
-    end
+    # transactional or unspecified type - no special fields required
+    {:ok, email}
   end
 end
